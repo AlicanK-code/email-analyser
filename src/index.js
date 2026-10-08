@@ -1,136 +1,152 @@
-require('dotenv').config();
-const express = require('express');
-const { google } = require('googleapis');
-const session = require('express-session');
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
+
+const crypto = require('crypto');
+const express = require('express');
+const session = require('express-session');
+const { google } = require('googleapis');
+const { scanInbox, statusOf } = require('./gmail');
+
+const PORT = Number(process.env.PORT) || 3000;
+const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
+const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 500;
+const SESSION_COOKIE = 'email-analyser.sid';
+
+// Refuse to start without the secrets, rather than falling back to defaults.
+const missing = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'SESSION_SECRET'].filter(k => !process.env[k]);
+if (missing.length) {
+    console.error(`Missing required environment variables: ${missing.join(', ')}`);
+    console.error('Copy .env.example to .env and fill in the values.');
+    process.exit(1);
+}
 
 const app = express();
-const port = 3000;
-
-// Session Config:
+app.disable('x-powered-by');
 
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'this-is-the-key',
+    name: SESSION_COOKIE,
+    secret: process.env.SESSION_SECRET,
     resave: false,
-    saveUninitialized: true
+    saveUninitialized: false,
+    cookie: {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 60 * 60 * 1000, // 1 hour, matching Google's access token lifetime
+    },
 }));
 
-// OAUTH2 Client:
-// Via Web Credentials
+// Only the public/ folder is served, so server code and config stay private.
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
-console.log("id check: ", process.env.GOOGLE_CLIENT_ID);
+// A fresh OAuth client per request, so one user's tokens are never shared with another.
+function createOAuthClient() {
+    return new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        REDIRECT_URI,
+    );
+}
 
-const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    "http://localhost:3000/auth/google/callback" // Redirect URL from Google Console
-)
+function safeEqual(a, b) {
+    const bufA = Buffer.from(String(a));
+    const bufB = Buffer.from(String(b));
+    return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
 
-const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']; // Google READONLY scope
+// Returns a whole number in range, or null if the input is invalid.
+function parseLimit(raw) {
+    if (raw === undefined) return DEFAULT_LIMIT;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 1 && n <= MAX_LIMIT ? n : null;
+}
 
-// Look for index.html
-app.use(express.static(__dirname));
-
-// Authentication Route:
-// Login Process
+// --- Auth routes ---
 
 app.get('/login', (req, res) => {
-    const url = oauth2Client.generateAuthUrl({
-        access_type:  'offline', // Used for Refresh Token
+    // Random state value ties Google's callback to this browser session (prevents login CSRF).
+    const state = crypto.randomBytes(32).toString('hex');
+    req.session.oauthState = state;
+
+    const url = createOAuthClient().generateAuthUrl({
+        access_type: 'online', // tokens live only in the session, so no refresh token is needed
         scope: SCOPES,
-        prompt: 'consent' //Forces Google to give a refresh token every time
+        state,
     });
     res.redirect(url);
 });
 
-// Route where Google sends the user back:
-
 app.get('/auth/google/callback', async (req, res) => {
-    const { code } = req.query;
+    const { code, state, error } = req.query;
+    const expectedState = req.session.oauthState;
+    delete req.session.oauthState;
+
+    if (error) return res.redirect('/?auth=denied');
+    if (!code || !state || !expectedState || !safeEqual(state, expectedState)) {
+        return res.status(400).send('Invalid sign-in attempt. Please go back and try again.');
+    }
+
     try {
-        const {tokens} = await oauth2Client.getToken(code);
-        // Save token into current session:
-        req.session.tokens = tokens;
-        res.send("Authenticated Successfully!");
-    } catch (error) {
-        console.error("Auth error: ", error);
-        res.status(500).send("Authentication failed.");
+        const { tokens } = await createOAuthClient().getToken(code);
+        // New session ID after login, so a pre-login session ID can't be reused.
+        req.session.regenerate(err => {
+            if (err) {
+                console.error('Session error:', err);
+                return res.status(500).send('Sign-in failed.');
+            }
+            req.session.tokens = tokens;
+            res.redirect('/');
+        });
+    } catch (err) {
+        console.error('Auth error:', err.message);
+        res.status(500).send('Sign-in failed.');
     }
 });
 
-async function start(tokens) {
-    
-    oauth2Client.setCredentials(tokens);
-    
-    // The Gmail tool:
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
-    // 2. Get a list of X most recent messages
-    console.log("Scanning inbox...");
-    const res = await gmail.users.messages.list({
-        userId: 'me',
-        maxResults: 100,
+app.post('/logout', (req, res) => {
+    req.session.destroy(() => {
+        res.clearCookie(SESSION_COOKIE);
+        res.status(204).end();
     });
+});
 
-    const messages = res.data.messages || [];
-    const domainCounts = {};
+// --- API routes ---
 
-    // 3. Loop through and extract domains (Step 3.1 in your notes)
-    for (const msg of messages) {
-        const details = await gmail.users.messages.get({
-            userId: 'me',
-            id: msg.id,
-        });
-
-        // Find the "From" line in the email headers
-        const fromHeader = details.data.payload.headers.find(h => h.name === 'From');
-        if (fromHeader) {
-            const emailMatch = fromHeader.value.match(/@([\w.-]+)/);
-            if (emailMatch) {
-                const domain = emailMatch[1].replace('>', '');
-                domainCounts[domain] = (domainCounts[domain] || 0) + 1;
-            }
-        }
-    } 
-    
-    // Convert the data into an array to sort
-    const sortDomains = Object.entries(domainCounts);
-
-    // Sort the domains
-    sortDomains.sort(function(a, b){return b[1] - a[1]});
-
-    // transforming the data to a list of objects
-    const domainMap = sortDomains.map(([a, b]) => ({
-        Domain: a,
-        Count: b
-    }));
-
-    // 4. Output RAW DATA
-    console.log("\n--- WHO OWNS YOUR INBOX? ---");
-
-    return domainMap; // sends data back to function caller
-}
+app.get('/api/status', (req, res) => {
+    res.json({ authenticated: Boolean(req.session.tokens) });
+});
 
 app.get('/data', async (req, res) => {
-    // Check if user is logged in:
-    if(!req.session.tokens) {
-        return res.redirect('/login');
+    // 401 rather than a redirect: fetch() can't follow a redirect to Google's sign-in page.
+    if (!req.session.tokens) {
+        return res.status(401).json({ error: 'not_authenticated', message: 'Please sign in.' });
     }
+
+    const limit = parseLimit(req.query.max);
+    if (limit === null) {
+        return res.status(400).json({
+            error: 'invalid_max',
+            message: `max must be a whole number between 1 and ${MAX_LIMIT}.`,
+        });
+    }
+
+    const auth = createOAuthClient();
+    auth.setCredentials(req.session.tokens);
 
     try {
-        const emailData = await start(req.session.tokens); // Pass session token to scanning function
-        res.json(emailData); // sending clean list to browser
+        res.json(await scanInbox(auth, limit));
     } catch (err) {
-        console.error(err); // Log the real error to the terminal
-        res.status(500).send("Scanning failed.");
+        if (statusOf(err) === 401) {
+            delete req.session.tokens;
+            return res.status(401).json({ error: 'session_expired', message: 'Your sign-in expired.' });
+        }
+        console.error('Scan failed:', err.message);
+        res.status(500).json({ error: 'scan_failed', message: 'Scanning failed. Check the server logs.' });
     }
 });
 
-// listen for visitors
-app.listen(port, () => {
-    console.log(`Server is live at http://localhost:${port}`);
-    console.log(`Go to http://localhost:${port}/login to authenticate.`);
-    //open(`http://localhost:${port}`);
-    
+app.listen(PORT, () => {
+    console.log(`Server is live at http://localhost:${PORT}`);
 });
-

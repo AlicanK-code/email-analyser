@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email-Analyser</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+</head>
+
+<!-- Flex container to use column direction to wrap elements so they can stack (button & table)-->
+<body class="bg-info-subtle d-flex flex-column justify-content-center align-items-center vh-100">
+
+    <div class="bg-info bg-opacity-10 border border-info-subtle border-3 rounded-3 p-4 w-50 text-center position-relative">
+
+        <!-- Table to show the results -->
+        <div id="tableContainer" class="mb-4" style="overflow-y: auto; max-height: 400px;"> <!-- Overflow adds a scroll bar if the table gets too tall -->
+            <table class="table table-hover" id="emailTable" style="display: none;"> <!-- Hidden until client.js has results to show -->
+                <thead class="table-info sticky-top"> <!-- Header colour, and keeps headings in place while scrolling -->
+                    <tr>
+                        <th scope="col">Domain</th>
+                        <th scope="col">Count</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+
+        <p id="status" class="text-muted small mb-3" aria-live="polite"></p>
+
+        <button type="button" id="btn" class="btn btn-info text-white px-5 shadow-sm position-relative" disabled>Loading...</button>
+
+        <button type="button" id="signOut" class="btn btn-outline-secondary btn-sm position-absolute" style="bottom: 10px; left: 10px" hidden>
+            Sign out
+        </button>
+
+        <button type="button" class="btn btn-info text-white px-2 shadow-sm position-absolute" style="bottom: 10px; right: 10px"
+                data-bs-toggle="modal" data-bs-target="#staticBackdrop" aria-label="Settings">
+            <i class="bi bi-gear-fill"></i>
+        </button>
+    </div>
+
+    <!-- Settings modal -->
+    <div class="modal fade" id="staticBackdrop" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-labelledby="staticBackdropLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="staticBackdropLabel">Control Panel</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-start">
+                    <div class="mb-3">
+                        <label for="maxResults" class="form-label fw-semibold">No. emails to retrieve</label>
+                        <input type="number" id="maxResults" class="form-control" value="100" min="1" max="500" step="1">
+                        <div id="inputError" class="text-danger small mt-1" style="display: none;"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <!-- No data-bs-dismiss here: client.js closes the modal only if the value is valid -->
+                    <button type="button" id="saveSettings" class="btn btn-info text-white">Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="client.js"></script>
+
+</body>
+</html>

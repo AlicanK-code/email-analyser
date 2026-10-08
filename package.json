@@ -1,20 +1,29 @@
 {
   "name": "email-analyser",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "See which sender domains fill your Gmail inbox. Node/Express app using OAuth2 and the Gmail API (read-only).",
+  "main": "src/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test"
   },
-  "keywords": [],
-  "author": "",
+  "engines": {
+    "node": ">=18.11"
+  },
+  "keywords": [
+    "gmail",
+    "gmail-api",
+    "oauth2",
+    "express",
+    "email-analytics"
+  ],
+  "author": "Alican Kaplan",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
-    "google-auth-library": "^10.5.0",
-    "googleapis": "^105.0.0",
-    "open": "^8.4.2"
-  },
-  "description": ""
+    "googleapis": "^105.0.0"
+  }
 }
